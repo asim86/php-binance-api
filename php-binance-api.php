@@ -29,12 +29,14 @@ if (version_compare(phpversion(), '7.0', '<=')) {
  */
 class API
 {
+    use Margin, Futures;
+
     protected $base = 'https://api.binance.com/api/'; // /< REST endpoint for the currency exchange
     protected $baseTestnet = 'https://testnet.binance.vision/api/'; // /< Testnet REST endpoint for the currency exchange
     protected $wapi = 'https://api.binance.com/wapi/'; // /< REST endpoint for the withdrawals
     protected $sapi = 'https://api.binance.com/sapi/'; // /< REST endpoint for the supporting network API
-    protected $fapi = 'https://fapi.binance.com/'; // /< REST endpoint for the futures API
-    protected $bapi = 'https://www.binance.com/bapi/'; // /< REST endpoint for the internal Binance API
+    protected $fapi = 'https://fapi.binance.com/'; // /< REST endpoint for the features API
+    protected $bapi = 'https://www.binance.com/bapi/'; // /< REST endpoint for the base API
     protected $stream = 'wss://stream.binance.com:9443/ws/'; // /< Endpoint for establishing websocket connections
     protected $streamTestnet = 'wss://testnet.binance.vision/ws/'; // /< Testnet endpoint for establishing websocket connections
     protected $api_key; // /< API key that you created in the binance website member area
@@ -632,41 +634,17 @@ class API
     }
 
     /**
-     * exchangeInfo -  Gets the complete exchange info, including limits, currency options etc.
-     * 
-     * @link https://binance-docs.github.io/apidocs/spot/en/#exchange-information
+     * exchangeInfo Gets the complete exchange info, including limits, currency options etc.
      *
      * $info = $api->exchangeInfo();
-     * $info = $api->exchangeInfo('BTCUSDT');
      *
-     * $arr = array('ATABUSD','BTCUSDT');
-     * $info = $api->exchangeInfo($arr);
-     *
-     * @property int $weight 10
-     *
-     * @param string|array  $symbols  (optional)  A symbol or an array of symbols, default is empty
-     *
-     * @return array containing the response
+     * @return array with error message or exchange info array
      * @throws \Exception
      */
-    public function exchangeInfo($symbols = null)
+    public function exchangeInfo()
     {
         if (!$this->exchangeInfo) {
-            $arr = array();
-            $arr['symbols'] = array();
-            $parameters = [];
-
-            if ($symbols) {
-                if (gettype($symbols) == "string") {
-                    $parameters["symbol"] = $symbols;
-                    $arr = $this->httpRequest("v3/exchangeInfo", "GET", $parameters);
-                }                    
-                if (gettype($symbols) == "array")  {
-                    $arr = $this->httpRequest('v3/exchangeInfo?symbols=' . '["' . implode('","', $symbols) . '"]');
-                }
-            } else {
-                $arr = $this->httpRequest("v3/exchangeInfo");
-            }
+            $arr = $this->httpRequest("v3/exchangeInfo");
             
             $this->exchangeInfo = $arr;
             $this->exchangeInfo['symbols'] = null;
@@ -840,17 +818,15 @@ class API
             "coin" => $asset,
             "address" => $address,
             "amount" => $amount,
+            "transactionFeeFlag" => $transactionFeeFlag,
             "sapi" => true,
         ];
-
         if (is_null($addressName) === false && empty($addressName) === false) {
             $options['name'] = str_replace(' ', '%20', $addressName);
         }
         if (is_null($addressTag) === false && empty($addressTag) === false) {
             $options['addressTag'] = $addressTag;
         }
-        if ($transactionFeeFlag) $options['transactionFeeFlag'] = true;
-        
         if (is_null($network) === false && empty($network) === false) {
             $options['network'] = $network;
         }
@@ -1300,16 +1276,17 @@ class API
                 unset($params['sapi']);
                 $base = $this->sapi;
             }
-
+		
             if (isset($params['fapi'])) {
                 unset($params['fapi']);
                 $base = $this->fapi;
             }
-
+		
             if (isset($params['bapi'])) {
                 unset($params['bapi']);
                 $base = $this->bapi;
             }
+        
             $query = $this->binance_build_query($params);
             $query = str_replace([ '%40' ], [ '@' ], $query);//if send data type "e-mail" then binance return: [Signature for this request is not valid.]
             $signature = hash_hmac('sha256', $query, $this->api_secret);
@@ -1538,11 +1515,7 @@ class API
         if (isset($flags['newOrderRespType'])) {
             $opt['newOrderRespType'] = $flags['newOrderRespType'];
         }
-        
-        if (isset($flags['newClientOrderId'])) {
-            $opt['newClientOrderId'] = $flags['newClientOrderId'];
-        }
-        
+
         $qstring = ($test === false) ? "v3/order" : "v3/order/test";
         return $this->httpRequest($qstring, "POST", $opt, true);
     }
@@ -1749,7 +1722,7 @@ class API
     }
 
     /**
-     * executionHandler Convert WebSocket trade execution into array
+     * tickerStreamHandler Convert WebSocket trade execution into array
      *
      * $data = $this->executionHandler( $json );
      *
@@ -2408,10 +2381,10 @@ class API
     /**
      * chart Pulls /kline data and subscribes to @klines WebSocket endpoint
      *
-     * $api->chart(["BNBBTC"], "15m", function($api, $symbol, $chart) {
+     * $api->chart(["BNBBTC"], function($api, $symbol, $chart) {
      * echo "{$symbol} chart update\n";
      * print_r($chart);
-     * });
+     * }, "15m");
      *
      * @param $symbols string required symbols
      * @param $interval string time inteval
@@ -2633,7 +2606,7 @@ class API
 
         // @codeCoverageIgnoreStart
         // phpunit can't cover async function
-        $connector($this->getWsEndpoint() . $this->listenKey)->then(function ($ws) use ($loop) {
+        $connector($this->getWsEndpoint() . $this->listenKey)->then(function ($ws) {
             $ws->on('message', function ($data) use ($ws) {
                 if ($this->subscriptions['@userdata'] === false) {
                     //$this->subscriptions[$endpoint] = null;
@@ -2652,15 +2625,13 @@ class API
                     }
                 }
             });
-            $ws->on('close', function ($code = null, $reason = null) use ($loop) {
+            $ws->on('close', function ($code = null, $reason = null) {
                 // WPCS: XSS OK.
                 echo "userData: WebSocket Connection closed! ({$code} - {$reason})" . PHP_EOL;
-                $loop->stop();
             });
-        }, function ($e) use ($loop) {
+        }, function ($e) {
             // WPCS: XSS OK.
             echo "userData: Could not connect: {$e->getMessage()}" . PHP_EOL;
-            $loop->stop();
         });
 
         $loop->run();
@@ -2831,12 +2802,12 @@ class API
 
     public function getXMbxUsedWeight() : int
     {
-        return $this->xMbxUsedWeight;
+        $this->xMbxUsedWeight;
     }
 
     public function getXMbxUsedWeight1m() : int
     {
-        return $this->xMbxUsedWeight1m;
+        $this->xMbxUsedWeight1m;
     }
 
     private function getRestEndpoint() : string
@@ -2930,21 +2901,6 @@ class API
         $arr['sapi'] = $this->httpRequest("v1/account/status", 'GET', [ 'sapi' => true ], true);
         return $arr;
     }
-
-    /**
-     * apiRestriction - Fetch a set of API restrictions
-     *
-     * @link https://binance-docs.github.io/apidocs/spot/en/#get-api-key-permission-user_data
-     *
-     * @property int $weight 1
-     *
-     * @return array containing the response
-     * @throws \Exception
-     */
-    public function apiRestrictions()
-    {
-        return $this->httpRequest("v1/account/apiRestrictions", 'GET', ['sapi' => true], true);
-    }
     
     /**
      * apiTradingStatus - Fetch account API trading status detail.
@@ -3008,7 +2964,7 @@ class API
             $error = "Parameter stopprice expected numeric for ' $side . ' ' . $symbol .', got " . gettype($stopprice);
             trigger_error($error, E_USER_ERROR);
         } else {
-            $opt['stopPrice'] = $stopprice;
+            $opt['stopprice'] = $stopprice;
         }
 
         if (is_null($stoplimitprice) === false && empty($stoplimitprice) === false) {
@@ -3028,54 +2984,4 @@ class API
 
         return $this->httpRequest("v3/order/oco", "POST", $opt, true);
     }    
-
-    /**
-    * avgPrice - get the average price of a symbol based on the last 5 minutes
-    *
-    * $avgPrice = $api->avgPrice( "ETHBTC" );
-    *
-    * @property int $weight 1
-    *
-    * @param string $symbol (mandatory) a symbol, e.g. ETHBTC
-    *
-    * @return string with symbol price
-    * @throws \Exception
-    */
-    public function avgPrice(string $symbol)
-    {
-        $ticker = $this->httpRequest("v3/avgPrice", "GET", ["symbol" => $symbol]);
-        return $ticker['price'];
-    }
-
-      
-    /*********************************************
-     * 
-     * Binance Liquid Swap (bswap) functions
-     * 
-     * https://binance-docs.github.io/apidocs/spot/en/#bswap-endpoints
-     * 
-     *********************************************/
-
-    /**
-    * bswapQuote - Request a quote for swap of quote asset (selling) or base asset (buying), essentially price/exchange rates.
-    *
-    * @property int $weight 2
-    *
-    * @param string $baseAsset  (mandatory) e.g. ETH
-    * @param string $quoteAsset (mandatory) e.g. BTC
-    * @param string $quoteQty   (mandatory)
-    *
-    * @return array containing the response
-    * @throws \Exception
-    */
-    public function bswapQuote($baseAsset, $quoteAsset, $quoteQty) {
-        $opt = [
-            'sapi'       => true,
-            'quoteAsset' => $quoteAsset,
-            'baseAsset'  => $baseAsset,
-            'quoteQty'   => $quoteQty,
-        ];
-      
-        return $this->httpRequest("v1/bswap/quote", 'GET', $opt, true);
-    }
 }
